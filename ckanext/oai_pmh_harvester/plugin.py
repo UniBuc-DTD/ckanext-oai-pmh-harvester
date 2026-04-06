@@ -143,10 +143,12 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
         config = self._get_configuration(harvest_job)
 
         filter_set = config.get("set", None)
-        log.debug("Configured set for filtering records: '%s'", filter_set)
+        if filter_set is not None:
+            log.debug("Configured set for filtering records: '%s'", filter_set)
 
         limit = config.get("limit", None)
-        log.debug("Configured limit for number of fetched records: %d", limit)
+        if limit is not None:
+            log.debug("Configured limit for number of fetched records: %d", limit)
 
         if limit is not None:
             # Check if we already have more fetched/linked datasets in the DB
