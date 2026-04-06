@@ -220,6 +220,7 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
                 f"Unable to get record with metadata from provider: {ex}",
                 harvest_object,
             )
+            return False
 
         if not metadata:
             self._save_object_error(
