@@ -1,11 +1,11 @@
 import json
 import logging
-import random
 import re
 from time import sleep
 import uuid
 
 from ckan.types import Context
+from requests import HTTPError
 from sickle import Sickle
 import sqlalchemy as sa
 import html
@@ -81,11 +81,6 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
             if not isinstance(source_config_obj["limit"], int):
                 raise ValueError("`limit` must be an integer")
 
-        if "request_delay" in source_config_obj:
-            delay = source_config_obj["request_delay"]
-            if not isinstance(delay, int) and not isinstance(delay, float):
-                raise ValueError("`request_delay` must be a number")
-
         return source_config
 
     def get_original_url(self, harvest_object_id) -> str | None:
@@ -157,13 +152,6 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
         if limit is not None:
             log.debug("Configured limit for number of fetched records: %d", limit)
 
-        request_delay = config.get("request_delay", None)
-        if request_delay is not None:
-            log.debug(
-                "Configured delay between requests, to avoid throttling limits: %f",
-                float(request_delay),
-            )
-
         if limit is not None:
             # Check if we already have more fetched/linked datasets in the DB
             # than the limit configured by the user.
@@ -184,6 +172,13 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
                 object_ids.append(obj.id)
                 counter += 1
 
+            if counter > 0:
+                log.info(
+                    "We already have %d harvested datasets from this source in the database, will add up to %d more",
+                    len(object_ids),
+                    limit - len(object_ids),
+                )
+
         else:
             object_ids = []
             counter = 0
@@ -200,9 +195,6 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
                 counter += 1
                 if limit is not None and counter == limit:
                     break
-
-                if request_delay is not None:
-                    sleep(request_delay)
 
         num_objects = len(object_ids)
         if num_objects == 0:
@@ -233,24 +225,30 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
         source_url = harvest_object.job.source.url
         sickle = Sickle(source_url)
 
-        config = self._get_configuration(harvest_object.job)
-
-        request_delay = config.get("request_delay", None)
-        if request_delay is not None:
-            log.debug(
-                "Configured delay between requests, to avoid throttling limits: %f",
-                float(request_delay),
-            )
-
-        if request_delay is not None:
-            # Sleep for a random time to ensure other requests start before/after us
-            sleep(request_delay * random.uniform(0.5, 1.1))
-
         try:
-            record = sickle.GetRecord(
-                identifier=harvest_object.guid, metadataPrefix="oai_dc"
-            )
+            try:
+                record = sickle.GetRecord(
+                    identifier=harvest_object.guid, metadataPrefix="oai_dc"
+                )
+            except HTTPError as httperr:
+                # Client error: too many requests
+                if httperr.response.status_code == 429:
+                    log.warning(
+                        "Received error 429 too many requests from OAI-PMH API, waiting a bit then trying request again"
+                    )
+
+                    sleep_duration = 5
+                    sleep(sleep_duration)
+
+                    record = sickle.GetRecord(
+                        identifier=harvest_object.guid, metadataPrefix="oai_dc"
+                    )
+
+                else:
+                    raise
+
             metadata = record.get_metadata()
+
         except Exception as ex:
             self._save_object_error(
                 f"Unable to get record with metadata from provider: {ex}",
