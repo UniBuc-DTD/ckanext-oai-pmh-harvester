@@ -1,6 +1,8 @@
 import json
 import logging
+import random
 import re
+from time import sleep
 import uuid
 
 from ckan.types import Context
@@ -79,6 +81,11 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
             if not isinstance(source_config_obj["limit"], int):
                 raise ValueError("`limit` must be an integer")
 
+        if "request_delay" in source_config_obj:
+            delay = source_config_obj["request_delay"]
+            if not isinstance(delay, int) and not isinstance(delay, float):
+                raise ValueError("`request_delay` must be a number")
+
         return source_config
 
     def get_original_url(self, harvest_object_id) -> str | None:
@@ -150,6 +157,13 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
         if limit is not None:
             log.debug("Configured limit for number of fetched records: %d", limit)
 
+        request_delay = config.get("request_delay", None)
+        if request_delay is not None:
+            log.debug(
+                "Configured delay between requests, to avoid throttling limits: %f",
+                float(request_delay),
+            )
+
         if limit is not None:
             # Check if we already have more fetched/linked datasets in the DB
             # than the limit configured by the user.
@@ -187,10 +201,19 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
                 if limit is not None and counter == limit:
                     break
 
-        if len(object_ids) == 0:
+                if request_delay is not None:
+                    sleep(request_delay)
+
+        num_objects = len(object_ids)
+        if num_objects == 0:
             self._save_gather_error(
                 f"Gather: No records found for endpoint URL '{harvest_job.source.url}' and filter set '{filter_set}'",
                 harvest_job,
+            )
+        else:
+            log.info(
+                "Gather stage found %d objects to harvest",
+                num_objects,
             )
 
         return object_ids
@@ -209,6 +232,19 @@ class OAIPMHHarvesterPlugin(HarvesterBase):
 
         source_url = harvest_object.job.source.url
         sickle = Sickle(source_url)
+
+        config = self._get_configuration(harvest_object.job)
+
+        request_delay = config.get("request_delay", None)
+        if request_delay is not None:
+            log.debug(
+                "Configured delay between requests, to avoid throttling limits: %f",
+                float(request_delay),
+            )
+
+        if request_delay is not None:
+            # Sleep for a random time to ensure other requests start before/after us
+            sleep(request_delay * random.uniform(0.5, 1.1))
 
         try:
             record = sickle.GetRecord(
